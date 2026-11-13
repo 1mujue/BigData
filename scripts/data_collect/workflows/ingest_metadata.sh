@@ -2,20 +2,20 @@
 set -euo pipefail
 
 if [[ $# -lt 3 || $# -gt 4 ]]; then
-  echo "用法: bash scripts/ingest_metadata.sh <stream> <year> <limit> [page-size]" >&2
+  echo "用法: bash scripts/data_collect/workflows/ingest_metadata.sh <stream> <year> <limit> [page-size]" >&2
   exit 2
 fi
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.."
 
 stream=$1
 year=$2
 limit=$3
 page_size=${4:-100}
 
-compose=(docker compose -f docker/compose.yaml)
+compose=(docker compose -f scripts/data_collect/docker/compose.yaml)
 hdfs() {
-  "${compose[@]}" exec -T namenode hdfs "$@"
+  "${compose[@]}" exec -T --interactive=false namenode hdfs "$@"
 }
 
 work_dir=$(mktemp -d)
@@ -31,7 +31,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python scripts/collect_dblp.py \
+python -m scripts.data_collect collect \
   --stream "$stream" --year "$year" --limit "$limit" \
   --page-size "$page_size" --output "$local_file"
 
@@ -55,8 +55,8 @@ staging_dir="/papers/metadata/staging"
 hdfs dfs -mkdir -p "$staging_dir" "$batch_dir"
 staged_path="$staging_dir/batch-${work_dir##*/}.jsonl"
 
-hdfs dfs -put - "$staged_path" < "$local_file"
-python scripts/validate_metadata.py "$hdfs_base$staged_path" \
+"${compose[@]}" exec -T namenode hdfs dfs -put - "$staged_path" < "$local_file"
+python -m scripts.data_collect validate-metadata "$hdfs_base$staged_path" \
   --expected-count "$row_count"
 
 hdfs dfs -mv "$staged_path" "$batch_path"
