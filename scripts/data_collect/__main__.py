@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 from .index import PaperPageIndex, read_pages
 from .metadata import DblpCollector, MetadataTable
-from .pdf import DOI_PREFIX, OpenAlexPdfResolver, PdfDownloader, PdfPageExtractor
+from .pdf import OpenAlexPdfResolver, PdfDownloader, PdfPageExtractor
 from .tool import spark_session, write_jsonl
 
 
@@ -35,22 +35,23 @@ def build_metadata(args, _parser):
         MetadataTable(spark).build(args.input_uri, args.output_uri)
 
 
-def resolve_pdfs(args, _parser):
-    from pyspark.sql import functions as F
+def collect_pdfs(args, parser):
+    from .batch import collect_and_download
 
+    if args.workers < 1 or (args.max_searches is not None and args.max_searches < 0):
+        parser.error("--workers 必须大于 0，--max-searches 不能小于 0")
+    collect_and_download(args)
+
+
+def resolve_pdfs(args, _parser):
     with spark_session("resolve-paper-pdf-links") as spark:
-        papers = (
-            spark.read.parquet(args.input_uri)
-            .withColumn("doi", F.lower(F.regexp_replace(F.trim("doi_url"), DOI_PREFIX, "")))
-            .where(F.col("doi").startswith("10."))
-            .select("paper_id", "title", "doi")
-            .orderBy("paper_id")
-            .limit(10)
-            .collect()
-        )
+        papers = spark.read.parquet(args.input_uri).orderBy("paper_id")
+        if args.limit:
+            papers = papers.limit(args.limit)
+        papers = papers.collect()
 
     if not papers:
-        raise SystemExit("这批数据没有可用于查询的 DOI。")
+        raise SystemExit("这批元数据为空。")
 
     manifest = OpenAlexPdfResolver().resolve(papers)
     write_jsonl(args.output, manifest)
@@ -109,6 +110,8 @@ def index_pages(args, parser):
 
 
 def main():
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     root_parser = argparse.ArgumentParser(
         prog="python -m scripts.data_collect",
         description="论文采集与处理",
@@ -139,10 +142,22 @@ def main():
     parser.add_argument("input_uri", help="已校验的 JSONL 批次目录")
     parser.add_argument("output_uri", help="本次生成的 Parquet 目录")
 
-    parser = commands.add_parser("resolve-pdfs", help="为一小批论文查询公开 PDF 链接")
+    parser = commands.add_parser("resolve-pdfs", help="分批查询 OpenAlex 的全部公开 PDF 候选")
     parser.set_defaults(handler=resolve_pdfs, command_parser=parser)
     parser.add_argument("input_uri", help="HDFS 中的 Parquet 目录")
     parser.add_argument("output", type=Path, help="输出 JSONL 清单")
+    parser.add_argument("--limit", type=int, help="可选的论文数上限")
+
+    parser = commands.add_parser("collect-pdfs", help="按会议、年份自动采集、下载 PDF 并入库 HDFS，可续跑")
+    parser.set_defaults(handler=collect_pdfs, command_parser=parser)
+    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("venues.json"))
+    parser.add_argument("--venues", nargs="+", help="默认采集配置中的全部会议和期刊")
+    parser.add_argument("--years", nargs="+", type=int, default=[2024, 2025, 2026])
+    parser.add_argument("--output", type=Path, default=Path("data/collection"))
+    parser.add_argument("--hdfs-root", default="/papers/collection/main")
+    parser.add_argument("--limit-per-venue", type=int, help="验证用：每个会议、年份的论文上限；默认全量")
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--max-searches", type=int, help="可选的 Firecrawl 新查询总数上限；默认不限，0 为不新增查询")
 
     parser = commands.add_parser("download-pdf", help="下载清单中指定论文的 PDF")
     parser.set_defaults(handler=download_pdf, command_parser=parser)

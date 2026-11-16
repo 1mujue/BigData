@@ -54,8 +54,8 @@ python -m pip install -r requirements.txt
 python -m pip check
 ```
 
-`requirements.txt` 固定 PySpark 和 PyMuPDF 版本。仅从 DBLP 查询元数据时，可以直接用 Python 运行采集命令，该命令只用标准库。
+`requirements.txt` 固定 PySpark、PyMuPDF、HTML 解析和环境变量加载的依赖版本。运行采集命令前安装该文件中的依赖。
 
 ## 仓库导航
 
-- [论文收集模块](scripts/data_collect/README.md) 包含按期刊与年份查询、服务启动、数据处理和端到端验证。
+- [论文收集模块](scripts/data_collect/README.md) 包含 DBLP 批量采集、PDF 自动下载及续跑、HDFS 入库、服务启动和端到端验证。

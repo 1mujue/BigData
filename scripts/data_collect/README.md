@@ -8,11 +8,44 @@
 | --- | --- | --- |
 | 元数据采集 | DBLP 会议或期刊标识与年份范围 → 每篇一行的 JSONL | Python、DBLP SPARQL |
 | 入库和整理 | 已校验的 JSONL → HDFS 批次 → 去重后的 Parquet | Docker Compose、HDFS、PySpark |
-| 查找和下载 | DOI → PDF 候选链接 → `<paper_id>.pdf` | OpenAlex、Python |
+| 查找和下载 | 根据论文条目和公开来源取得 `<paper_id>.pdf` | 官方站点、OpenAlex、Researchr、Firecrawl |
 | 文本处理 | PDF → 每页一行的 JSONL → HDFS 页记录 | PyMuPDF、HDFS |
 | 全文检索 | HDFS 页记录 → ES 页文档 → 页码和高亮 | PySpark、Elasticsearch |
 
 `dblp_id` 是原始 DBLP 记录标识。`paper_id` 是该标识的 SHA-256，用来关联元数据、PDF 和逐页文本。Elasticsearch 的文档 ID 采用 `paper_id:page`，重跑同一篇同页数的 PDF 时会更新对应页文档。
+
+## 自动批量采集 PDF 并入库
+
+安装 `requirements.txt`，启动下述 HDFS 服务后，从项目根目录运行：
+
+```bash
+python -u -m scripts.data_collect collect-pdfs
+```
+
+默认采集 [venues.json](venues.json) 中 13 个会议、期刊的 2024 至 2026 年 DBLP 条目，未收录的届次跳过。PDF 依次从官方来源、OpenAlex 公开地址、Researchr 作者副本和 Firecrawl 搜索结果获取；会议及 Researchr 年度入口统一在配置文件中维护。
+
+Firecrawl 使用仓库根目录 `.env` 或进程环境中的配置，`.env` 已被 Git 忽略：
+
+```dotenv
+FIRECRAWL_API_KEY=你的密钥
+FIRECRAWL_BASE_URL=https://api.firecrawl.dev/v2
+```
+
+OpenAlex 不需要额外 key。代理使用标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，`NO_PROXY` 应包含 `127.0.0.1,localhost`；进程环境优先于 `.env`。
+
+限定会议、年份和采集数量：
+
+```bash
+python -u -m scripts.data_collect collect-pdfs \
+  --venues ICLR ICSE FSE --years 2024 2025 --limit-per-venue 2 \
+  --output data/collection-check --hdfs-root /papers/collection/check
+```
+
+不传 `--limit-per-venue` 就采集选定范围的全部条目。相同命令可续跑，已入库文件跳过，搜索结果复用缓存；改变采集范围时使用新的输出目录。
+
+Firecrawl 默认没有查询总数上限，每篇缺失论文搜索一次并尝试最多 5 个结果，无可用文件就记录并跳过。可显式用 `--max-searches` 限定新增查询数，`0` 表示只复用缓存。默认 4 个下载线程，同一主机限速，连续受阻时转向其他来源。
+
+本地默认目录为 `data/collection`：`raw/` 保存 DBLP 批次，`downloads.jsonl` 记录进度，`manifest.jsonl` 和 `summary.json` 保存结果及错误。HDFS 默认根目录为 `/papers/collection/main`：`pdfs/` 保存 PDF，`tables/papers/` 和 `tables/downloads/` 保存通过 `paper_id` 关联的 Parquet 表。文件上传并核对后清理本地暂存，上传失败则保留。
 
 ## 启动 HDFS 和 Elasticsearch
 
@@ -67,31 +100,13 @@ curl --fail --silent --show-error http://127.0.0.1:9200/
 
 四个映射都绑定在 `127.0.0.1`。Elasticsearch 关闭认证以便本机课程实验。Docker 命名卷保存已有数据，日常可以用 `docker compose -f scripts/data_collect/docker/compose.yaml stop` 停止服务，再用 `up -d` 启动。
 
-## 一条命令验证整条流程
+## 原有流程样例
 
 ```bash
 bash scripts/data_collect/workflows/verify_pipeline.sh
 ```
 
-脚本依次检查以下内容。
-
-1. DBLP 按每页 2 行分页采集 5 条元数据，并按 DOI `10.1145/3514221.3517851` 单独定位 Litmus。
-2. 将两批 JSONL 上传到 HDFS，Spark 验证样例批次有 5 个唯一 ID，再生成合并后的 Parquet。
-3. 从 OpenAlex 解析候选直链，用已核对的 CMU 公开副本下载 Litmus。这个固定备用地址使验证可以覆盖下载和 PDF 校验。
-4. 提取 PDF 的 15 页正文，上传 PDF 和 JSONL，再核对 HDFS 读回的 PDF SHA-256。
-5. Spark 从 HDFS 读回连续的 15 页，写入 `paper-pages-verification`，核对文档数并断言第 1 页返回短语高亮。
-
-成功时末尾应出现类似输出。
-
-```text
-总页数 15，有文本的页数 15
-索引 paper-pages-verification 已核对 15 页
-命中页码 [1]
-第 1 页高亮 ...
-端到端验证通过。
-```
-
-每次运行都会打印独立的本地 `data/verification/run-…` 路径和 HDFS `/papers/verification/run-…` 路径，保留中间文件方便定位失败。验证索引按稳定 ID 更新样例页，可重复执行。样例的 DOI 和正式出版信息可查 MIT 机构库。 [MIT 论文记录](https://dspace.mit.edu/entities/publication/f005695a-2797-49b1-b068-08af75e54c73) · [CMU 公开 PDF](https://db.cs.cmu.edu/papers/2022/yu-litmusdb-sigmod2022.pdf)
+脚本以 Litmus 论文验证 DBLP 采集、HDFS 存储、Spark 整理、PDF 页文本提取和 ES 检索。具体步骤见 [verify_pipeline.sh](workflows/verify_pipeline.sh)，输出保存在 `data/verification/` 与 HDFS `/papers/verification/`。
 
 ## 分步使用
 
@@ -112,8 +127,8 @@ python -m scripts.data_collect collect \
 ```
 
 - 单年用 `--year`，跨年用 `--start-year` 和 `--end-year`。范围包含起止年份，例如 2010 年代对应 2010 至 2019 年。
-- `--limit` 是整个查询去重后的篇数上限，默认为 20。记录按发表年份升序返回，取满后结束。`--all` 会分页取完整结果。`--page-size` 控制每次请求的行数，`--doi` 可进一步限定到一个 DOI。
-- 输出是本地 JSONL，每行包含 DBLP 标识、标题、年份、发表场所标识和 DOI 链接。缺失 DOI 时该字段为 `null`。收集正式课程语料时，按课程采用的 CCF-A 目录和正式发表目录核对结果。
+- `--limit` 是整个查询去重后的篇数上限，默认为 20。按 DBLP 标识排序，取满后结束。`--all` 会分页取完整结果。`--page-size` 控制每页的论文数，同一篇的全部作者和链接保留在一起；`--doi` 可进一步限定到一个 DOI。
+- 输出是本地 JSONL，每行包含 DBLP 标识、标题、年份、发表场所、DOI、作者名单（按姓名排序）、文档链接、TOC 卷链接和出版类型。缺失 DOI 时该字段为 `null`。
 
 ### 采集并入库单年批次
 
@@ -166,7 +181,7 @@ python -m scripts.data_collect index-pages \
   "hdfs://127.0.0.1:8020/papers/processed/pages/$paper_id.jsonl" "$paper_id"
 ```
 
-链接解析脚本目前取最多 10 篇带 DOI 的记录，状态分别为 `link_found`、`no_direct_pdf` 和 `no_match`。遇到 HTTP 403 时，可以为下载脚本传入已核对属于同一篇论文的公开备用链接 `--pdf-url`。下载成功后，用首页标题和 DOI 核对身份。
+`resolve-pdfs` 分批查询全部记录，保留 OpenAlex 的全部公开候选；可用 `--limit` 限定数量，无 DOI 的记录仍保留在清单中。上述单篇命令用于检查具体文件；自动回退、批量下载和入库使用 `collect-pdfs`。
 
 ## 目录结构
 
@@ -174,7 +189,10 @@ python -m scripts.data_collect index-pages \
 | --- | --- |
 | [__main__.py](__main__.py) | Python 命令入口，解析参数并调用对应模块。 |
 | [metadata.py](metadata.py) | DBLP 元数据查询、Spark 元数据校验和 Parquet 表整理。 |
-| [pdf.py](pdf.py) | OpenAlex 链接解析、PDF 下载和正文提取。 |
+| [pdf.py](pdf.py) | OpenAlex 链接解析、共用 PDF 下载与校验、正文提取。 |
+| [sources.py](sources.py) | 官方目录、Researchr、Firecrawl 和网页链接解析。 |
+| [batch.py](batch.py) | 批量任务、续跑、HDFS 上传和结果表。 |
+| [network.py](network.py) | 共用 HTTP 请求、主机限速和有限重试。 |
 | [index.py](index.py) | 读取 HDFS 页记录，写入 Elasticsearch 并验证短语命中。 |
 | [tool.py](tool.py) | 共享的 JSONL 写入和 Spark 会话管理。 |
 | [workflows/](workflows/) | 单年批次入库和端到端验证的 Bash 工作流。 |
