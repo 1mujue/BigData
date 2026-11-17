@@ -6,9 +6,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlencode, urljoin, urlsplit
 
-from .tool import write_jsonl
-from .network import FetchError, HttpClient
-from .sources import candidate, canonical_url, html_candidates, identity_matches, normalized
+from ..tool import write_jsonl
+from ..network import FetchError, HttpClient
+from .candidates import candidate, canonical_url, figshare_article_id, html_candidates, identity_matches, normalized
 
 
 PDF_LOCK = threading.Lock()
@@ -22,13 +22,12 @@ class OpenAlexPdfResolver:
         self.client = client or HttpClient()
 
     def resolve(self, papers):
-        papers = [paper.asDict() if hasattr(paper, "asDict") else dict(paper) for paper in papers]
-        for paper in papers:
-            paper["doi"] = re.sub(DOI_PREFIX, "", (paper.get("doi") or paper.get("doi_url") or "").strip()).lower()
-        works = self._lookup_works({paper["doi"] for paper in papers if paper["doi"]})
-        manifest = []
-        for paper in papers:
-            work = works.get(paper["doi"])
+        dois = {paper["paper_id"]: re.sub(DOI_PREFIX, "", (paper.get("doi") or "").strip()).lower()
+                for paper in papers}
+        works = self._lookup_works({doi for doi in dois.values() if doi})
+        by_paper = {}
+        for paper_id, doi in dois.items():
+            work = works.get(doi)
             locations = []
             if work is not None:
                 locations = [work.get("best_oa_location") or {}, *(work.get("locations") or [])]
@@ -41,18 +40,8 @@ class OpenAlexPdfResolver:
                         seen.add(url)
                         candidates.append({"url": url, "source": "openalex", "trusted": True,
                                            "version": location.get("version")})
-            direct_pdf = next((loc for loc in locations if loc.get("is_oa") and loc.get("pdf_url")), {})
-            status = "no_match" if work is None else "no_direct_pdf"
-            if direct_pdf:
-                status = "link_found"
-            manifest.append({
-                **paper,
-                "pdf_url": direct_pdf.get("pdf_url"),
-                "pdf_version": direct_pdf.get("version"),
-                "candidates": candidates,
-                "status": status,
-            })
-        return manifest
+            by_paper[paper_id] = candidates
+        return by_paper
 
     def _lookup_works(self, dois):
         works_by_doi = {}
@@ -145,14 +134,17 @@ class PdfResolver:
                         urls.insert(0, content_url)
                         primary_urls.add(content_url)
                     # Figshare-backed institutional repositories share the public article API.
-                    match = re.search(r"/articles/(?:[^/]+/){1,2}(\d+)(?:/|$)", urlsplit(final_url).path)
-                    if match:
-                        article = self.client.json("https://api.figshare.com/v2/articles/" + match[1])
-                        if identity_matches(paper, article.get("title", ""), [a.get("full_name", "") for a in article.get("authors", [])]):
-                            trusted = True
-                            files = [file["download_url"] for file in article.get("files", []) if file.get("name", "").lower().endswith(".pdf")]
-                            urls.extend(files)
-                            primary_urls.update(files)
+                    article_id = figshare_article_id(soup, final_url)
+                    if article_id:
+                        try:
+                            article = self.client.json("https://api.figshare.com/v2/articles/" + article_id)
+                            if identity_matches(paper, article.get("title", ""), [a.get("full_name", "") for a in article.get("authors", [])]):
+                                trusted = True
+                                files = [file["download_url"] for file in article.get("files", []) if file.get("name", "").lower().endswith(".pdf")]
+                                urls.extend(files)
+                                primary_urls.update(files)
+                        except (FetchError, ValueError, OSError) as error:
+                            attempt["error"] = f"Figshare lookup failed: {error}"
                     for link in reversed(urls[:8]):
                         # Generic page anchors may point to referenced papers or supplementary files.
                         queue.appendleft(({**entry, "url": link, "trusted": trusted and link in primary_urls}, depth + 1))

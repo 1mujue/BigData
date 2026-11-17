@@ -1,6 +1,7 @@
 """Small curl transport shared by collection and PDF downloads."""
 import hashlib
 import json
+import sys
 import subprocess
 import threading
 import time
@@ -10,31 +11,37 @@ from urllib.parse import urlsplit
 
 
 class FetchError(RuntimeError):
-    def __init__(self, host, status):
+    def __init__(self, host, status=None):
         self.status = status
-        super().__init__(f"{host}: {status}")
+        super().__init__(f"{host}: {status}" if status is not None else host)
 
 
 class HttpClient:
-    def __init__(self, cache_dir=None):
+    def __init__(self, cache_dir=None, *, timeout=600):
         self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.timeout = timeout
         self._guard = threading.Lock()
         self._hosts = {}
+
+    def _host_state(self, host):
+        with self._guard:
+            return self._hosts.setdefault(host, {"lock": threading.Lock(),
+                "slots": threading.BoundedSemaphore(4), "last": 0})
 
     def fetch(self, url, path, *, data=None, headers=None):
         address = urlsplit(url)
         if address.scheme not in {"http", "https"} or not address.hostname:
             raise ValueError("Expected an HTTP(S) URL")
         host = address.hostname
-        with self._guard:
-            state = self._hosts.setdefault(host, {"lock": threading.Lock(), "last": 0, "denied": 0})
-        # Host serialization also prevents a batch from hammering a blocked source.
-        with state["lock"]:
-            if state["denied"] >= 3:
-                raise FetchError(host, "host_blocked")
+        state = self._host_state(host)
+        with state["slots"], TemporaryDirectory() as directory:
+            headers_path = Path(directory) / "headers"
             interval = 15 if host.endswith("arxiv.org") else 0.3
             for attempt in range(3):
-                time.sleep(max(0, state["last"] + interval - time.monotonic()))
+                # Space request starts without holding the lock during file transfer.
+                with state["lock"]:
+                    time.sleep(max(0, state["last"] + interval - time.monotonic()))
+                    state["last"] = time.monotonic()
                 def quoted(value):
                     return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r') + '"'
                 config = ["url = " + quoted(url)]
@@ -44,24 +51,27 @@ class HttpClient:
                 # Headers, including credentials, travel on stdin, never in argv or logs.
                 result = subprocess.run(
                     ["curl", "--config", "-", "--silent", "--show-error", "--location",
-                     "--connect-timeout", "15", "--max-time", "90", "--max-redirs", "8",
+                     "--connect-timeout", "15", "--max-time", str(self.timeout), "--user-agent", "Mozilla/5.0",
+                     "--speed-limit", "1024", "--speed-time", "90", "--max-redirs", "8",
+                     "--dump-header", str(headers_path),
                      "--output", str(path), "--write-out", "%{http_code}\n%{url_effective}"],
                     input="\n".join(config), text=True, capture_output=True,
                 )
-                state["last"] = time.monotonic()
                 code, _, final_url = result.stdout.partition("\n")
                 status = int(code) if code.isdigit() else 0
                 response_host = urlsplit(final_url).hostname or host
                 if result.returncode == 0 and 200 <= status < 300:
-                    state["denied"] = 0
                     return final_url
-                if status == 403:
-                    with self._guard:
-                        target = self._hosts.setdefault(response_host, {"lock": threading.Lock(), "last": 0, "denied": 0})
-                        target["denied"] += 1
                 transient = result.returncode in {5, 6, 7, 18, 28, 35, 52, 56} or status in {408, 429, 500, 502, 503, 504}
                 if transient and attempt < 2:
-                    time.sleep(2 ** (attempt + 1))
+                    delay = 2 ** (attempt + 1)
+                    if status == 429:
+                        for line in headers_path.read_text(encoding="latin-1").splitlines():
+                            name, _, value = line.partition(":")
+                            if name.lower() == "retry-after" and value.strip().isdigit():
+                                delay = max(delay, int(value.strip()))
+                        print(f"{response_host}: HTTP 429, retrying in {delay}s", file=sys.stderr, flush=True)
+                    time.sleep(delay)
                     continue
                 raise FetchError(response_host, f"HTTP {status}" if status else f"curl {result.returncode}")
 

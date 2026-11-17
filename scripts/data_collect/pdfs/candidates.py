@@ -47,6 +47,16 @@ def html_candidates(html, url):
     return soup, list(dict.fromkeys(links))
 
 
+def figshare_article_id(soup, url):
+    # Institutional domains use the same platform assets as figshare.com.
+    hosts = [urlsplit(url).hostname, *(urlsplit(urljoin(url, tag["src"])).hostname
+                                     for tag in soup.select("script[src]"))]
+    if not any(host and (host == "figshare.com" or host.endswith(".figshare.com")) for host in hosts):
+        return None
+    match = re.search(r"/articles/(?:[^/]+/){1,2}(\d+)(?:/|$)", urlsplit(url).path)
+    return match[1] if match else None
+
+
 class SourceCatalog:
     def __init__(self, client, config):
         self.client = client
@@ -59,20 +69,21 @@ class SourceCatalog:
         if key in self.indexes:
             return self.indexes[key]
         index = defaultdict(list)
-        if venue in {"CVPR", "ICCV"}:
-            url = f"https://openaccess.thecvf.com/{venue}{year}?day=all"
-            soup = BeautifulSoup(self.client.text(url, cache=True), "html.parser")
-            anchors = soup.select("dt.ptitle a[href]")
-        elif venue == "ICLR":
-            url = f"https://proceedings.iclr.cc/paper_files/paper/{year}"
-            soup = BeautifulSoup(self.client.text(url, cache=True), "html.parser")
-            anchors = soup.select('a[href*="Abstract"]')
+        settings = self.config.get(venue, {})
+        if settings.get("adapter") == "cvf":
+            template = settings["proceedings_url"]
+            selector = "dt.ptitle a[href]"
+        elif template := settings.get("abstract_index_url"):
+            selector = 'a[href*="Abstract"]'
         else:
-            anchors = []
-        for anchor in anchors:
+            return index
+
+        url = template.format(venue=venue, year=year)
+        soup = BeautifulSoup(self.client.text(url, cache=True), "html.parser")
+        for anchor in soup.select(selector):
             index[normalized(anchor.get_text(" ", strip=True))].append(urljoin(url, anchor["href"]))
-        if venue in {"CVPR", "ICCV", "ICLR"} and not index:
-            raise ValueError(f"Empty official index: {venue} {year}")
+        if not index:
+            raise ValueError(f"Empty official index: {url}")
         self.indexes[key] = index
         return index
 
@@ -80,13 +91,16 @@ class SourceCatalog:
         index = self.indexes.get((paper["venue"], paper["year"]), {})
         matches = index.get(normalized(paper["title"]), [])
         urls = matches if len(matches) == 1 else []
-        urls = [*urls, *(paper.get("document_urls") or [])]
+        urls = [*urls, *(paper.get("pdf_urls") or []), *(paper.get("document_urls") or [])]
+        if paper.get("paper_url"):
+            urls.append(paper["paper_url"])
+        if paper.get("doi"):
+            urls.append("https://doi.org/" + paper["doi"])
         if paper.get("doi_url"):
             urls.append(paper["doi_url"])
-        # Public archives are preferable to publisher DOI redirects.
-        urls.sort(key=lambda url: urlsplit(url).hostname in {"doi.org", "dl.acm.org", "ieeexplore.ieee.org"})
-        return [candidate(url, "official") for url in dict.fromkeys(urls)
-                if urlsplit(url).hostname != "openreview.net"]
+        # Try public archives before publisher redirects and OpenReview fallbacks.
+        urls.sort(key=lambda url: urlsplit(url).hostname in {"doi.org", "dl.acm.org", "ieeexplore.ieee.org", "openreview.net"})
+        return [candidate(url, "official") for url in dict.fromkeys(urls)]
 
     def prepare_researchr(self, venue, year):
         key = (venue, year)

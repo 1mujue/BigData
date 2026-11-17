@@ -1,51 +1,67 @@
-# 论文收集模块
+# 论文采集、检索与粗筛
 
-按[仓库环境配置](../../README.md#环境配置)准备运行环境。以下命令从仓库根目录执行。采集与验证需要访问 DBLP SPARQL、OpenAlex 和公开 PDF 托管站点。
+先按[仓库环境配置](../../README.md#环境配置)安装依赖，再[启动 HDFS 和 Elasticsearch](#启动-hdfs-和-elasticsearch)。以下命令均在仓库根目录执行。
 
-## 数据流程
+## 准备候选语料
 
-| 阶段 | 输入与输出 | 工具 |
-| --- | --- | --- |
-| 元数据采集 | DBLP 会议或期刊标识与年份范围 → 每篇一行的 JSONL | Python、DBLP SPARQL |
-| 入库和整理 | 已校验的 JSONL → HDFS 批次 → 去重后的 Parquet | Docker Compose、HDFS、PySpark |
-| 查找和下载 | 根据论文条目和公开来源取得 `<paper_id>.pdf` | 官方站点、OpenAlex、Researchr、Firecrawl |
-| 文本处理 | PDF → 每页一行的 JSONL → HDFS 页记录 | PyMuPDF、HDFS |
-| 全文检索 | HDFS 页记录 → ES 页文档 → 页码和高亮 | PySpark、Elasticsearch |
-
-`dblp_id` 是原始 DBLP 记录标识。`paper_id` 是该标识的 SHA-256，用来关联元数据、PDF 和逐页文本。Elasticsearch 的文档 ID 采用 `paper_id:page`，重跑同一篇同页数的 PDF 时会更新对应页文档。
-
-## 自动批量采集 PDF 并入库
-
-安装 `requirements.txt`，启动下述 HDFS 服务后，从项目根目录运行：
+语料快照包含 `papers.jsonl` 和 `manifest.json`，数据文件不随 Git 分发。已有快照时，直接把目录传给 `build-corpus`。自行采集时，先在[来源配置](config/venues.json)中选择会议或期刊的官方目录、栏目和年度出版映射，再运行 `collect`。例如：
 
 ```bash
-python -u -m scripts.data_collect collect-pdfs
+python -m scripts.data_collect collect \
+  --config scripts/data_collect/config/venues.json --sources ACL ICLR ICML \
+  --years 2024 2025 --output data/corpus/example
+python -m scripts.data_collect build-corpus data/corpus/example
 ```
 
-默认采集 [venues.json](venues.json) 中 13 个会议、期刊的 2024 至 2026 年 DBLP 条目，未收录的届次跳过。PDF 依次从官方来源、OpenAlex 公开地址、Researchr 作者副本和 Firecrawl 搜索结果获取；会议及 Researchr 年度入口统一在配置文件中维护。
+`--sources` 省略时使用所给配置中的全部来源；`--years` 指定年份，`--limit-per-source` 可对每个来源年份采样。使用 CVF 平台的会议以 `proceedings_url` 指定论文集，采集和 PDF 镜像共用这个地址；采用摘要页索引的镜像可配置 `abstract_index_url`。DBLP 等补充来源只为候选论文补充书目信息。缺 DOI、摘要或 PDF 均不影响进入候选库。
 
-Firecrawl 使用仓库根目录 `.env` 或进程环境中的配置，`.env` 已被 Git 忽略：
+更新时用 `--previous 快照目录` 指定已有语料，并写入新的输出目录。完整采集会替换所选会议年份分区；采样保留未采到的论文，未请求的分区保持原样。论文由稳定的 `paper_id` 标识，补 DOI 不改变其身份。采集失败时查看清单的 `collection_status`、`partitions` 和论文的 `errors`；命令以非零状态退出。可用 `--refresh` 跳过采集缓存。
 
-```dotenv
-FIRECRAWL_API_KEY=你的密钥
-FIRECRAWL_BASE_URL=https://api.firecrawl.dev/v2
-```
+`build-corpus` 在 HDFS 的 `/papers/corpora/<snapshot_id>/` 保存快照，使用 Spark 校验行数、标识和必填字段，并生成 Parquet 表与覆盖统计。
 
-OpenAlex 不需要额外 key。代理使用标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，`NO_PROXY` 应包含 `127.0.0.1,localhost`；进程环境优先于 `.env`。
+## 建索引与粗筛
 
-限定会议、年份和采集数量：
+[筛选配置](config/screening.json)是一份可编辑的任务示例。建索引只需要其中的 `embedding`；自由搜索还可指定 BM25 字段权重 `fields` 和融合参数 `rrf_k`；批量粗筛使用 `topics` 与每主题选取数 `per_topic`。这些设置可以放在同一份 JSON 中。
 
 ```bash
-python -u -m scripts.data_collect collect-pdfs \
-  --venues ICLR ICSE FSE --years 2024 2025 --limit-per-venue 2 \
-  --output data/collection-check --hdfs-root /papers/collection/check
+python -m scripts.data_collect index-corpus data/corpus/example \
+  --profile scripts/data_collect/config/screening.json
+python -m scripts.data_collect screen \
+  --profile scripts/data_collect/config/screening.json --output data/screening/example
 ```
 
-不传 `--limit-per-venue` 就采集选定范围的全部条目。相同命令可续跑，已入库文件跳过，搜索结果复用缓存；改变采集范围时使用新的输出目录。
+嵌入输入为标题和摘要。服务地址、模型、维度与输入文本决定缓存键；相同文本可复用 `data/embeddings/cache.sqlite3` 中的向量。建立索引后，`papers-current` 默认指向该索引。试验其他快照可传 `--no-activate`，然后用输出中的具体索引名运行 `screen --index` 或 `search --index`。
 
-Firecrawl 默认没有查询总数上限，每篇缺失论文搜索一次并尝试最多 5 个结果，无可用文件就记录并跳过。可显式用 `--max-searches` 限定新增查询数，`0` 表示只复用缓存。默认 4 个下载线程，同一主机限速，连续受阻时转向其他来源。
+Elasticsearch 对标题、摘要和关键词计算 BM25，并对检索范围内的文档向量计算精确余弦相似度。一个主题有多条查询描述时取最高余弦。应用按 RRF 合并两路排名：每路贡献 `1/(k+rank)`，未命中 BM25 的论文只贡献向量分数；并列时按向量相似度和论文 ID 排序。每个主题取前 N 篇，最后按论文 ID 合并。可用 `--venues`、`--years` 限定范围，用 `--per-topic N` 指定选取数量。
 
-本地默认目录为 `data/collection`：`raw/` 保存 DBLP 批次，`downloads.jsonl` 记录进度，`manifest.jsonl` 和 `summary.json` 保存结果及错误。HDFS 默认根目录为 `/papers/collection/main`：`pdfs/` 保存 PDF，`tables/papers/` 和 `tables/downloads/` 保存通过 `paper_id` 关联的 Parquet 表。文件上传并核对后清理本地暂存，上传失败则保留。
+`scores.jsonl` 保存逐篇逐主题的分数和排名，`selected.jsonl` 保存入选论文及其主题依据。`configuration.json` 和 `summary.json` 记录运行配置、语料快照和运行标识。HDFS 保存运行文件和分数表；ES 的 `paper-screening-runs` 与 `paper-screening-results` 可用于查询已完成的运行和入选记录。
+
+## 在全库或入选范围内搜索
+
+```bash
+python -m scripts.data_collect search --profile scripts/data_collect/config/screening.json \
+  --text 'program repair using execution feedback' --top 20
+python -m scripts.data_collect search --profile scripts/data_collect/config/screening.json \
+  --text 'program repair using execution feedback' --run-id RUN_ID
+```
+
+`RUN_ID` 取自筛选结果的 `summary.json`。指定运行时，搜索使用其语料索引，仅对入选论文按新查询评分；筛选记录保持不变。查询嵌入模型须与索引一致。
+
+## 入选论文 PDF
+
+```bash
+python -m scripts.data_collect collect-pdfs --selection data/screening/example
+```
+
+命令校验已完成运行的清单及哈希，只下载该运行入选的论文。默认从[来源配置](config/venues.json)查找平台入口，也可用 `--config` 指定其他配置。依次尝试官方来源、OpenAlex、Researchr 和 Firecrawl。用 `--max-searches` 限制 Firecrawl 新搜索次数，`--workers` 和 `--venue-workers` 调整下载与会议年份组并发。
+
+本地日志保存在 `data/pdf_ingest/`，PDF 默认写入 HDFS 的 `/papers/selected/`。同一输出目录可续跑，也可接收另一份粗筛结果：已入库文件经核对后复用，文件保留首次准入的运行标识，各次清单存于 `runs/<run_id>/`。下载失败记录原因，不改变入选名单。
+
+`extract-pages PDF OUTPUT` 提取物理页码和正文，`index-pages INPUT_URI PAPER_ID` 将页文本写入 ES，支持 `--es-url`。单篇下载诊断使用 `download-pdf`，独立书目查询使用 `query-bibliography`。运行 `python -m scripts.data_collect 命令名 --help` 查看参数。
+
+## 凭据与网络
+
+进程环境或仓库根目录的 `.env` 可设置 `EMBEDDING_API_KEY`、`FIRECRAWL_API_KEY` 和 `FIRECRAWL_BASE_URL`。还可传 `--env-file PATH` 补充未设置的变量。ES 服务启用 API 密钥认证时设置 `ELASTICSEARCH_API_KEY`。嵌入缓存未命中时需要嵌入服务密钥；Firecrawl 用于元数据和 PDF 的补充获取。外部请求使用配置的代理，本地服务建议在 `NO_PROXY` 中列出 `127.0.0.1,localhost`。
 
 ## 启动 HDFS 和 Elasticsearch
 
@@ -93,126 +109,36 @@ curl --fail --silent --show-error http://127.0.0.1:9200/
 
 | 端口 | 用途 |
 | --- | --- |
-| `8020` | NameNode RPC，供 WSL 中的 Spark 查询 HDFS |
+| `8020` | NameNode RPC，供本机 Spark 查询 HDFS |
 | `9866` | DataNode 数据块传输 |
 | `9870` | NameNode 管理页面 |
 | `9200` | Elasticsearch HTTP API |
 
 四个映射都绑定在 `127.0.0.1`。Elasticsearch 关闭认证以便本机课程实验。Docker 命名卷保存已有数据，日常可以用 `docker compose -f scripts/data_collect/docker/compose.yaml stop` 停止服务，再用 `up -d` 启动。
 
-## 原有流程样例
+## 验证与开发入口
 
 ```bash
-bash scripts/data_collect/workflows/verify_pipeline.sh
+BIGDATA_ES_TESTS=1 python -m unittest discover -s tests -v
+bash scripts/data_collect/workflows/verify_pipeline.sh \
+  data/corpus/example scripts/data_collect/config/screening.json
 ```
 
-脚本以 Litmus 论文验证 DBLP 采集、HDFS 存储、Spark 整理、PDF 页文本提取和 ES 检索。具体步骤见 [verify_pipeline.sh](workflows/verify_pipeline.sh)，输出保存在 `data/verification/` 与 HDFS `/papers/verification/`。
+端到端验证对指定快照建表和索引，用首个主题选取一篇，检查全库与入选范围搜索、PDF 入库、页文本和高亮。提供可用的嵌入服务或相应的缓存，并选择含可下载论文的样本。验证使用具体索引，不切换默认检索范围。建表会在指定快照目录记录 `storage.json`，语料按快照写入 HDFS；样本粗筛运行会登记在 ES 中。脚本可接受第三个参数指定环境文件。
 
-## 分步使用
-
-### 按期刊和发表年份查询元数据
-
-运行 `python -m scripts.data_collect --help` 查看所有子命令。DBLP 查询使用 `collect` 子命令。`--stream` 使用 DBLP 的期刊或会议标识，例如 IEEE TKDE 的标识是其 DBLP 目录路径中的 `journals/tkde`。 [IEEE TKDE 的 DBLP 目录](https://dblp.org/db/journals/tkde/)
-
-```bash
-# 查询 2020–2024 年的 IEEE TKDE，取前 50 条
-python -m scripts.data_collect collect \
-  --stream journals/tkde --start-year 2020 --end-year 2024 \
-  --limit 50 --output data/raw/tkde-2020-2024.jsonl
-
-# 查询 SIGMOD 2022 的全部 DBLP 记录
-python -m scripts.data_collect collect \
-  --stream conf/sigmod --year 2022 --all \
-  --output data/raw/sigmod-2022.jsonl
-```
-
-- 单年用 `--year`，跨年用 `--start-year` 和 `--end-year`。范围包含起止年份，例如 2010 年代对应 2010 至 2019 年。
-- `--limit` 是整个查询去重后的篇数上限，默认为 20。按 DBLP 标识排序，取满后结束。`--all` 会分页取完整结果。`--page-size` 控制每页的论文数，同一篇的全部作者和链接保留在一起；`--doi` 可进一步限定到一个 DOI。
-- 输出是本地 JSONL，每行包含 DBLP 标识、标题、年份、发表场所、DOI、作者名单（按姓名排序）、文档链接、TOC 卷链接和出版类型。缺失 DOI 时该字段为 `null`。
-
-### 采集并入库单年批次
-
-```bash
-bash scripts/data_collect/workflows/ingest_metadata.sh conf/sigmod 2022 25 10
-```
-
-批次入库前由 Spark 校验行数、唯一 ID 和必填字段，入库文件以内容的 SHA-256 命名。同样内容的批次可重跑。
-
-### 从多个批次生成论文表
-
-首次由 WSL 里的 Spark 写入整理目录时，给运行用户准备写权限。
-
-```bash
-docker compose -f scripts/data_collect/docker/compose.yaml exec -T --interactive=false namenode \
-  hdfs dfs -mkdir -p /papers/metadata/curated
-docker compose -f scripts/data_collect/docker/compose.yaml exec -T --interactive=false namenode \
-  hdfs dfs -chown "$(id -un)" /papers/metadata/curated
-
-python -m scripts.data_collect build-metadata \
-  hdfs://127.0.0.1:8020/papers/metadata/batches/conf/sigmod/2022 \
-  hdfs://127.0.0.1:8020/papers/metadata/curated/sigmod-2022-v1
-```
-
-同一 `dblp_id` 优先保留带 DOI 的记录。再次生成时用新的 Parquet 路径，例如 `sigmod-2022-v2`。
-
-### 查找公开链接、下载和索引
-
-```bash
-python -m scripts.data_collect resolve-pdfs \
-  hdfs://127.0.0.1:8020/papers/metadata/curated/sigmod-2022-v1 \
-  data/processed/pdf-manifest.jsonl
-
-paper_id='从清单复制已核对的 paper_id'
-python -m scripts.data_collect download-pdf \
-  data/processed/pdf-manifest.jsonl data/raw/pdfs "$paper_id"
-
-python -m scripts.data_collect extract-pages \
-  "data/raw/pdfs/$paper_id.pdf" "data/processed/pages/$paper_id.jsonl"
-
-docker compose -f scripts/data_collect/docker/compose.yaml exec -T --interactive=false namenode \
-  hdfs dfs -mkdir -p /papers/raw/pdfs /papers/processed/pages
-docker compose -f scripts/data_collect/docker/compose.yaml exec -T namenode \
-  hdfs dfs -put -f - "/papers/raw/pdfs/$paper_id.pdf" < "data/raw/pdfs/$paper_id.pdf"
-docker compose -f scripts/data_collect/docker/compose.yaml exec -T namenode \
-  hdfs dfs -put -f - "/papers/processed/pages/$paper_id.jsonl" \
-  < "data/processed/pages/$paper_id.jsonl"
-
-python -m scripts.data_collect index-pages \
-  "hdfs://127.0.0.1:8020/papers/processed/pages/$paper_id.jsonl" "$paper_id"
-```
-
-`resolve-pdfs` 分批查询全部记录，保留 OpenAlex 的全部公开候选；可用 `--limit` 限定数量，无 DOI 的记录仍保留在清单中。上述单篇命令用于检查具体文件；自动回退、批量下载和入库使用 `collect-pdfs`。
-
-## 目录结构
-
-| 路径 | 职责 |
+| 修改内容 | 位置 |
 | --- | --- |
-| [__main__.py](__main__.py) | Python 命令入口，解析参数并调用对应模块。 |
-| [metadata.py](metadata.py) | DBLP 元数据查询、Spark 元数据校验和 Parquet 表整理。 |
-| [pdf.py](pdf.py) | OpenAlex 链接解析、共用 PDF 下载与校验、正文提取。 |
-| [sources.py](sources.py) | 官方目录、Researchr、Firecrawl 和网页链接解析。 |
-| [batch.py](batch.py) | 批量任务、续跑、HDFS 上传和结果表。 |
-| [network.py](network.py) | 共用 HTTP 请求、主机限速和有限重试。 |
-| [index.py](index.py) | 读取 HDFS 页记录，写入 Elasticsearch 并验证短语命中。 |
-| [tool.py](tool.py) | 共享的 JSONL 写入和 Spark 会话管理。 |
-| [workflows/](workflows/) | 单年批次入库和端到端验证的 Bash 工作流。 |
-| [docker/](docker/) | HDFS 和 Elasticsearch 的 Compose 配置。 |
-
-本地下载和验证结果位于仓库根目录的 `data/`，由 Git 忽略。Compose 项目名为 `paper-hdfs`。
-
-## 常见问题
-
-- **HDFS 提示安全模式**。检查 `dfsadmin -report` 和 `dfsadmin -safemode get`，确认 DataNode 注册和数据块上报情况。
-- **DBLP 返回 HTML**。确认请求使用 `sparql.dblp.org/sparql`，并检查 HTTP 状态和代理设置。
-- **本机 Elasticsearch 返回 HTTP 502**。如果终端开启了 HTTP 代理，将 `127.0.0.1` 和 `localhost` 加入 `NO_PROXY` 和 `no_proxy`，再检查本机端口。
-- **Spark 能列文件但读不到正文**。检查 DataNode 的 `9866` 端口和 `dfs.client.use.datanode.hostname` 设置。
-- **样例中出现论文集或 Workshop 介绍**。采集器按场所和年份取元数据。正式筛选时还需按课程采用的 CCF-A 目录与主会论文目录核对收录资格。
-- **提取后的文字顺序有偏差**。双栏、表格和扫描页可能影响提取质量。检索页码采用 PDF 的物理页序。
+| 官方目录、平台解析与 DBLP 补充 | [collectors/](collectors/) |
+| 论文标识、语料快照和 Spark 表 | [corpus.py](corpus.py) |
+| 向量、ES 论文索引、粗筛和检索 | [retrieval/](retrieval/) |
+| PDF 来源、入库、续跑和页文本 | [pdfs/](pdfs/) |
+| 来源和筛选任务配置 | [config/](config/) |
 
 ## 参考
 
-- [DBLP SPARQL 接口](https://blog.dblp.org/2024/09/09/introducing-our-public-sparql-query-service/)
+- [ES dense_vector](https://www.elastic.co/docs/reference/elasticsearch/mapping-reference/dense-vector)
+- [ES script_score 与余弦](https://www.elastic.co/docs/reference/query-languages/query-dsl/query-dsl-script-score-query)
+- [DBLP SPARQL](https://blog.dblp.org/2024/09/09/introducing-our-public-sparql-query-service/)
 - [OpenAlex PDF 链接和版本](https://help.openalex.org/data/locations/)
-- [Hadoop HDFS 命令](https://hadoop.apache.org/docs/r3.5.0/hadoop-project-dist/hadoop-hdfs/HDFSCommands.html)
+- [HDFS 命令](https://hadoop.apache.org/docs/r3.5.0/hadoop-project-dist/hadoop-hdfs/HDFSCommands.html)
 - [Spark JSON 数据源](https://spark.apache.org/docs/4.2.1/sql-data-sources-json.html)
-- [Elasticsearch Bulk API](https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-bulk)
