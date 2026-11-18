@@ -1,0 +1,10 @@
+{
+  "codex": {"model": "fixture-reader", "effort": "high"},
+  "api": {
+    "provider": "deepseek",
+    "base_url": "https://example.invalid",
+    "model": "fixture-api",
+    "effort": "high",
+    "key_env": "SCREENING_TEST_KEY"
+  }
+}

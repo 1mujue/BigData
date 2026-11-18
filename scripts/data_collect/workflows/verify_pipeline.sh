@@ -47,7 +47,7 @@ selected=json.loads((root/'screening/selected.jsonl').read_text())
 result=json.loads((root/'search-selected.json').read_text())
 assert [r['paper_id'] for r in result['results']]==[selected['paper_id']]
 manifest=[json.loads(line) for line in (root/'pdf/runs'/run/'manifest.jsonl').read_text().splitlines()]
-assert len(manifest)==1 and manifest[0]['status']=='stored', 'Selected PDF unavailable; metadata/search checks passed, PDF check remains incomplete'
+assert len(manifest)==1 and manifest[0]['status']=='stored', 'Selected PDF unavailable'
 assert manifest[0]['first_screening_run']==run
 (root/'pdf-record.json').write_text(json.dumps(manifest[0]))
 PY
@@ -63,9 +63,22 @@ run_cli extract-pages "$run_dir/$paper_id.pdf" "$run_dir/$paper_id.jsonl"
 hdfs -mkdir -p "$hdfs_run/pages"
 hdfs -put -f - "$hdfs_run/pages/$paper_id.jsonl" < "$run_dir/$paper_id.jsonl"
 page_count=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["pages"])' "$run_dir/pdf-record.json")
-phrase=$(python -c 'import json,sys; print(" ".join(json.loads(open(sys.argv[1]).read())["title"].split()[:4]))' "$run_dir/screening/selected.jsonl")
+read -r expected_page phrase < <(python - "$run_dir/$paper_id.jsonl" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    for page in map(json.loads, source):
+        for line in page["text"].splitlines():
+            phrase = " ".join(line.split()[:4])
+            if any(character.isalnum() for character in phrase):
+                print(page["page"], phrase)
+                raise SystemExit
+raise SystemExit("No searchable PDF text found for the highlight check")
+PY
+)
 page_index=$(printf 'paper-pages-%s' "${run_dir##*/}" | tr '[:upper:]' '[:lower:]')
 hdfs_uri=$(python -c 'from scripts.data_collect.storage import HDFS_URI; print(HDFS_URI)')
 run_cli index-pages "$hdfs_uri$hdfs_run/pages/$paper_id.jsonl" "$paper_id" \
-  --index "$page_index" --expected-pages "$page_count" --phrase "$phrase" --expected-page 1
+  --index "$page_index" --expected-pages "$page_count" --phrase "$phrase" --expected-page "$expected_page"
 printf 'Pipeline verification completed: %s\n' "$run_dir"

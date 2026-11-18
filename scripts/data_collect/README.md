@@ -1,4 +1,4 @@
-# 论文采集、检索与粗筛
+# 论文采集、检索与筛选
 
 先按[仓库环境配置](../../README.md#环境配置)安装依赖，再[启动 HDFS 和 Elasticsearch](#启动-hdfs-和-elasticsearch)。以下命令均在仓库根目录执行。
 
@@ -58,6 +58,83 @@ python -m scripts.data_collect collect-pdfs --selection data/screening/example
 本地日志保存在 `data/pdf_ingest/`，PDF 默认写入 HDFS 的 `/papers/selected/`。同一输出目录可续跑，也可接收另一份粗筛结果：已入库文件经核对后复用，文件保留首次准入的运行标识，各次清单存于 `runs/<run_id>/`。下载失败记录原因，不改变入选名单。
 
 `extract-pages PDF OUTPUT` 提取物理页码和正文，`index-pages INPUT_URI PAPER_ID` 将页文本写入 ES，支持 `--es-url`。单篇下载诊断使用 `download-pdf`，独立书目查询使用 `query-bibliography`。运行 `python -m scripts.data_collect 命令名 --help` 查看参数。
+
+## 论文精筛
+
+精筛根据论文原文和复现条件逐篇形成结构化判断。Codex 和 API 使用同一套[选题标准](fine_screening/docs/standard.md)、[四维评分](config/fine_screening_rubric.json)与[记录格式](fine_screening/docs/records.md)。运行 `python -m scripts.data_collect fine-screen rubric` 查看评分表。
+
+### 准备论文与批次配置
+
+先完成[粗筛与 PDF 入库](#入选论文-pdf)。将粗筛目录和对应的 PDF 入库运行目录传给准备命令：
+
+```bash
+python -m scripts.data_collect fine-screen prepare-inputs \
+  --selection data/screening/example \
+  --pdf-run data/pdf_ingest/runs/RUN_ID \
+  --output data/fine_screening/papers.jsonl
+```
+
+命令按 `paper_id` 合并两份名单，从 HDFS 读取已入库 PDF，保存其来源和带页码的正文。没有可读正文的论文保留元数据，并在命令结果中列出原因。出版目录已标记正式发表的论文保留该资格，其余标为待核对。也可以依照[输入格式](fine_screening/docs/records.md#论文输入)自行提供 JSONL，例如需要附上作者仓库材料或补充来源资格时。
+
+每次运行传入一份批次 JSON，指定 `id`、`scope`、`max_concurrency`、`require_no_new_training` 和 `exclude_benchmark_primary`。在 `scope` 中写清研究方向和可用资源，两项布尔值分别决定是否排除需要新增参数训练的复现目标和以新 Benchmark 为主要贡献的论文。程序用同一份配置生成提示词并校验入选资格。
+
+```json
+{
+  "id": "software-engineering",
+  "scope": "软件工程论文。实验应能在课程提供的计算资源内完成。",
+  "max_concurrency": 2,
+  "require_no_new_training": false,
+  "exclude_benchmark_primary": false
+}
+```
+
+另建一份读者 JSON。用 `--reader codex` 或 `--reader api` 选其中一项，填写所用服务支持的模型和推理强度。API 的 `provider` 可选 `openai` 或 `deepseek`，`key_env` 是持有密钥的环境变量名。以下示例中的模型名和推理强度需按所选服务填写。
+
+```json
+{
+  "codex": {"model": "CODEX_MODEL", "effort": "high"},
+  "api": {
+    "provider": "openai",
+    "base_url": "https://api.openai.com/v1",
+    "model": "API_MODEL",
+    "effort": "high",
+    "key_env": "OPENAI_API_KEY"
+  }
+}
+```
+
+### 逐篇运行
+
+```bash
+python -m scripts.data_collect fine-screen prepare --stage detail --reader codex \
+  --batch batch.json --readers readers.json --input data/fine_screening/papers.jsonl \
+  --out data/fine_screening/run
+python -m scripts.data_collect fine-screen run --run data/fine_screening/run \
+  --auth-file "$HOME/.codex/auth.json"
+```
+
+Codex 每篇启动一个独立的 `codex exec`，读取提供的正文和作者材料，需要时补查公开来源。API 运行用 `--reader api` 准备，执行时通过环境变量或 `--env-file` 提供密钥。API 默认使用输入里的材料，每篇每次执行提交一次评分请求。需要 API 主动查找资料时，可显式设置 `"detail_sources": "web"`，该模式会在评分前联网研究和补取材料，OpenAI 读者也会在引文校验失败时尝试重新摘录。
+
+只用标题、摘要和标签安排阅读优先级时，将 `--stage` 设为 `triage`。预读可单独使用。精读可以直接从已有候选和正文开始。每篇成功收取后保留结果、引文和来源信息。重复启动同一运行时，程序跳过已有的有效记录，继续处理其余论文。
+
+### 收取、分析与导出
+
+```bash
+python -m scripts.data_collect fine-screen check --run data/fine_screening/run
+python -m scripts.data_collect fine-screen collect --run data/fine_screening/run \
+  --out data/fine_screening/results
+python -m scripts.data_collect fine-screen analyze --run data/fine_screening/run \
+  --out data/fine_screening/analysis
+```
+
+`collect` 输出逐篇判断、排序和待补查记录。`analyze` 使用 Spark SQL 对可推荐论文排序，并按档次、来源年份、模型、数据集等统计，输出 Parquet 和查询结果。运行 Spark 时使用项目的 Python 环境和 OpenJDK 17，Python driver 与 worker 应使用同一解释器。
+
+最终选择由调用者给出。选择文件是 JSON 数组，每项含 `paper_id` 和选择理由 `reason`。以下命令导出合格记录、名单和 Markdown。引文校验确认片段出现在登记的来源里，关键结论需要结合原文抽查。
+
+```bash
+python -m scripts.data_collect fine-screen export --run data/fine_screening/run \
+  --selection selection.json --out data/fine_screening/recommendations
+```
 
 ## 凭据与网络
 
@@ -132,6 +209,7 @@ bash scripts/data_collect/workflows/verify_pipeline.sh \
 | 论文标识、语料快照和 Spark 表 | [corpus.py](corpus.py) |
 | 向量、ES 论文索引、粗筛和检索 | [retrieval/](retrieval/) |
 | PDF 来源、入库、续跑和页文本 | [pdfs/](pdfs/) |
+| 精筛输入、逐篇评估、评分和 Spark 分析 | [fine_screening/](fine_screening/) |
 | 来源和筛选任务配置 | [config/](config/) |
 
 ## 参考

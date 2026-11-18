@@ -5,9 +5,10 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .pdfs.pages import PaperPageIndex, read_pages
+from .fine_screening import cli as fine_screening_cli
+from .pdfs.pages import PaperPageIndex, PdfPageExtractor, read_pages
 from .collectors.dblp import DblpCollector
-from .pdfs.download import PdfDownloader, PdfPageExtractor
+from .pdfs.download import PdfDownloader
 from .tool import write_json, write_jsonl
 
 
@@ -114,8 +115,7 @@ def index_pages(args, parser):
 
 def main():
     from dotenv import load_dotenv
-    load_dotenv(HERE.parents[1] / ".env")
-    root = argparse.ArgumentParser(prog="python -m scripts.data_collect", description="论文采集、ES 混合检索与筛选后 PDF 入库")
+    root = argparse.ArgumentParser(prog="python -m scripts.data_collect", description="论文采集、检索、PDF 入库和精筛")
     commands = root.add_subparsers(dest="command", required=True)
 
     def command(name, handler, help):
@@ -205,7 +205,12 @@ def main():
     parser.add_argument("--phrase")
     parser.add_argument("--expected-page", type=int)
 
+    fine_screening_cli.register_commands(commands.add_parser("fine-screen", help="逐篇评估论文复现条件"))
+
     args = root.parse_args()
+    if args.command == "fine-screen":
+        return fine_screening_cli.execute(args)
+    load_dotenv(HERE.parents[1] / ".env")
     if args.env_file:
         load_dotenv(args.env_file, override=False)
     result = args.handler(args, args.command_parser)
@@ -218,4 +223,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

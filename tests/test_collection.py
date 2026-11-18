@@ -25,8 +25,8 @@ class CollectionTests(unittest.TestCase):
     def test_metadata_cli_requires_configured_sources_and_explicit_years(self):
         from scripts.data_collect import __main__ as cli
         with patch("dotenv.load_dotenv"), patch.object(cli, "collect", return_value=None) as handler:
-            for options in ([], ["--config", "venues.json"], ["--years", "2024"]):
-                with self.subTest(options=options), patch("sys.argv", ["collector", "collect", *options]), redirect_stderr(io.StringIO()):
+            for options in (["--config", "venues.json"], ["--years", "2024"]):
+                with self.subTest(options=options), patch("sys.argv", ["collector", "collect", "--output", "snapshot", *options]), redirect_stderr(io.StringIO()):
                     with self.assertRaises(SystemExit) as error:cli.main()
                     self.assertEqual(error.exception.code, 2)
             handler.assert_not_called()

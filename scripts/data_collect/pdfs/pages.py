@@ -1,5 +1,34 @@
 from ..retrieval.elastic import Elasticsearch, ElasticsearchError
-from ..tool import spark_session
+from ..tool import spark_session, write_jsonl
+
+
+def read_pdf_pages(source, *, sort=False):
+    import pymupdf
+
+    try:
+        document = pymupdf.open(stream=source, filetype="pdf") if isinstance(source, bytes) else pymupdf.open(source)
+        with document:
+            if not document.is_pdf or document.needs_pass:
+                raise ValueError("输入文件必须是可读的 PDF。")
+            pages = [page.get_text("text", sort=sort) for page in document]
+    except (pymupdf.FileDataError, RuntimeError) as error:
+        raise ValueError("输入文件必须是可读的 PDF。") from error
+    if not any(page.strip() for page in pages):
+        raise ValueError("未提取到正文，请检查 PDF 文本层。")
+    return pages
+
+
+class PdfPageExtractor:
+    def __init__(self, pdf_path):
+        self.pdf_path = pdf_path
+
+    def extract(self, output_path):
+        pages = read_pdf_pages(self.pdf_path, sort=True)
+        write_jsonl(output_path, (
+            {"paper_id": self.pdf_path.stem, "page": number, "text": text.strip()}
+            for number, text in enumerate(pages, 1)
+        ))
+        return len(pages), sum(bool(text.strip()) for text in pages)
 
 
 class PaperPageIndex:

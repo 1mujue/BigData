@@ -6,7 +6,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlencode, urljoin, urlsplit
 
-from ..tool import write_jsonl
 from ..network import FetchError, HttpClient
 from .candidates import candidate, canonical_url, figshare_article_id, html_candidates, identity_matches, normalized
 
@@ -152,29 +151,3 @@ class PdfResolver:
                     attempt["status"] = "failed"
                     attempt["error"] = str(error)
         return result
-
-
-class PdfPageExtractor:
-    def __init__(self, pdf_path):
-        self.pdf_path = pdf_path
-
-    def extract(self, output_path):
-        import pymupdf
-
-        pages_with_text = 0
-        with pymupdf.open(self.pdf_path) as document:
-            if not document.is_pdf or document.needs_pass:
-                raise ValueError("输入文件必须是可读的 PDF。")
-
-            def page_records():
-                nonlocal pages_with_text
-                for page_number, page in enumerate(document, start=1):
-                    text = page.get_text("text", sort=True).strip()
-                    pages_with_text += bool(text)
-                    yield {"paper_id": self.pdf_path.stem, "page": page_number, "text": text}
-
-                if not pages_with_text:
-                    raise ValueError("未提取到正文，请检查 PDF 文本层。")
-
-            write_jsonl(output_path, page_records())
-            return document.page_count, pages_with_text

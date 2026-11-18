@@ -13,9 +13,10 @@ class HdfsStore:
     def __init__(self):
         self.command = ["docker", "compose", "-f", str(Path(__file__).parent / "docker/compose.yaml"), "exec", "-T", "namenode"]
 
-    def dfs(self, *args, input_file=None):
-        return subprocess.run([*self.command, "hdfs", "dfs", *args], stdin=input_file,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout.decode()
+    def dfs(self, *args, input_file=None, decode=True):
+        output = subprocess.run([*self.command, "hdfs", "dfs", *args], stdin=input_file,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
+        return output.decode() if decode else output
 
     def prepare(self, root):
         self.dfs("-mkdir", "-p", root + "/pdfs", root + "/tables")
