@@ -1,0 +1,229 @@
+{
+  "ACL": {
+    "stream": "conf/acl",
+    "adapter": "acl",
+    "repository": "acl-org/acl-anthology",
+    "ref": "master",
+    "xml_path": "data/xml/{year}.acl.xml",
+    "anthology": "{year}.acl",
+    "volumes": [
+      "long"
+    ]
+  },
+  "ICLR": {
+    "stream": "conf/iclr",
+    "adapter": "miniconf",
+    "catalog_url": "https://iclr.cc/virtual/{year}/papers.html",
+    "event_types": [
+      "Poster",
+      "Oral",
+      "Spotlight",
+      "Highlight",
+      ""
+    ],
+    "excluded_origins": [
+      "datasets_and_benchmarks",
+      "evaluations_and_datasets",
+      "datasets-and-benchmarks",
+      "journal-track",
+      "workshop",
+      "bridging-the-future"
+    ],
+    "paperlists": {
+      "repository": "papercopilot/paperlists",
+      "path": "iclr/iclr{year}.json",
+      "ref": "main"
+    },
+    "source_contains": "ICLR.cc/{year}/Conference",
+    "abstract_index_url": "https://proceedings.iclr.cc/paper_files/paper/{year}"
+  },
+  "ICML": {
+    "stream": "conf/icml",
+    "adapter": "icml",
+    "catalog_url": "https://icml.cc/virtual/{year}/papers.html",
+    "event_types": [
+      "Poster",
+      "Oral",
+      "Spotlight",
+      "Highlight",
+      ""
+    ],
+    "excluded_origins": [
+      "datasets_and_benchmarks",
+      "evaluations_and_datasets",
+      "datasets-and-benchmarks",
+      "journal-track",
+      "workshop",
+      "bridging-the-future"
+    ],
+    "paperlists": {
+      "repository": "papercopilot/paperlists",
+      "path": "icml/icml{year}.json",
+      "ref": "main"
+    },
+    "source_contains": "ICML.cc/{year}/Conference",
+    "pmlr_volumes": {
+      "2024": 235,
+      "2025": 267,
+      "2026": 306
+    }
+  },
+  "NeurIPS": {
+    "stream": "conf/nips",
+    "adapter": "miniconf",
+    "catalog_url": "https://neurips.cc/virtual/{year}/papers.html",
+    "event_types": [
+      "Poster",
+      "Oral",
+      "Spotlight",
+      "Highlight",
+      ""
+    ],
+    "excluded_origins": [
+      "datasets_and_benchmarks",
+      "evaluations_and_datasets",
+      "datasets-and-benchmarks",
+      "journal-track",
+      "workshop",
+      "bridging-the-future"
+    ],
+    "paperlists": {
+      "repository": "papercopilot/paperlists",
+      "path": "nips/nips{year}.json",
+      "ref": "main"
+    },
+    "source_contains": "NeurIPS.cc/{year}/Conference"
+  },
+  "AAAI": {
+    "stream": "conf/aaai",
+    "adapter": "aaai",
+    "oai_url": "https://ojs.aaai.org/index.php/AAAI/oai",
+    "section_prefixes": [
+      "AAAI Technical Track",
+      "AAAI Special Track",
+      "AAAI Special Technical Track"
+    ]
+  },
+  "CVPR": {
+    "stream": "conf/cvpr",
+    "adapter": "cvf",
+    "catalog_url": "https://cvpr.thecvf.com/virtual/{year}/papers.html",
+    "event_types": [
+      "Poster",
+      "Oral",
+      "Spotlight",
+      "Highlight",
+      ""
+    ],
+    "excluded_origins": [
+      "datasets_and_benchmarks",
+      "evaluations_and_datasets",
+      "datasets-and-benchmarks",
+      "journal-track",
+      "workshop",
+      "bridging-the-future"
+    ],
+    "paperlists": {
+      "repository": "papercopilot/paperlists",
+      "path": "cvpr/cvpr{year}.json",
+      "ref": "main"
+    },
+    "proceedings_url": "https://openaccess.thecvf.com/{venue}{year}?day=all"
+  },
+  "ICCV": {
+    "stream": "conf/iccv",
+    "adapter": "cvf",
+    "catalog_url": "https://iccv.thecvf.com/virtual/{year}/papers.html",
+    "event_types": [
+      "Poster",
+      "Oral",
+      "Spotlight",
+      "Highlight",
+      ""
+    ],
+    "excluded_origins": [
+      "datasets_and_benchmarks",
+      "evaluations_and_datasets",
+      "datasets-and-benchmarks",
+      "journal-track",
+      "workshop",
+      "bridging-the-future"
+    ],
+    "paperlists": {
+      "repository": "papercopilot/paperlists",
+      "path": "iccv/iccv{year}.json",
+      "ref": "main"
+    },
+    "proceedings_url": "https://openaccess.thecvf.com/{venue}{year}?day=all",
+    "not_held_years": [
+      2024,
+      2026
+    ]
+  },
+  "ICSE": {
+    "stream": "conf/icse",
+    "researchr": {
+      "2024": "https://conf.researchr.org/track/icse-2024/icse-2024-research-track",
+      "2025": "https://conf.researchr.org/track/icse-2025/icse-2025-research-track",
+      "2026": "https://conf.researchr.org/track/icse-2026/icse-2026-research-track"
+    },
+    "adapter": "researchr",
+    "bibliography_enrichment": true
+  },
+  "FSE": {
+    "stream": "journals/pacmse",
+    "issue": "FSE",
+    "researchr": {
+      "2024": "https://2024.esec-fse.org/track/fse-2024-research-papers",
+      "2025": "https://conf.researchr.org/track/fse-2025/fse-2025-research-papers",
+      "2026": "https://conf.researchr.org/track/fse-2026/fse-2026-research-papers"
+    },
+    "adapter": "researchr",
+    "bibliography_enrichment": true
+  },
+  "ASE": {
+    "stream": "conf/kbse",
+    "researchr": {
+      "2024": "https://conf.researchr.org/track/ase-2024/ase-2024-research",
+      "2025": "https://conf.researchr.org/track/ase-2025/ase-2025-papers",
+      "2026": "https://conf.researchr.org/track/ase-2026/ase-2026-research-track"
+    },
+    "adapter": "researchr",
+    "bibliography_enrichment": true
+  },
+  "ISSTA": {
+    "stream": "conf/issta",
+    "overrides": {
+      "2025": {
+        "stream": "journals/pacmse",
+        "issue": "ISSTA"
+      },
+      "2026": {
+        "stream": "journals/pacmse",
+        "issue": "ISSTA"
+      }
+    },
+    "researchr": {
+      "2024": "https://2024.issta.org/track/issta-2024-papers",
+      "2025": "https://conf.researchr.org/track/issta-2025/issta-2025-papers",
+      "2026": "https://conf.researchr.org/track/issta-2026/issta-2026-research-papers"
+    },
+    "adapter": "researchr",
+    "bibliography_enrichment": true
+  },
+  "JMLR": {
+    "stream": "journals/jmlr",
+    "adapter": "jmlr",
+    "volume_year_offset": 1999
+  },
+  "TOSEM": {
+    "stream": "journals/tosem",
+    "adapter": "crossref",
+    "issn": "1049-331X",
+    "publisher_url": "https://dl.acm.org/doi/{doi}",
+    "pdf_url": "https://dl.acm.org/doi/pdf/{doi}",
+    "excluded_publication_types": [
+      "editorial"
+    ]
+  }
+}

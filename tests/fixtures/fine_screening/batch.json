@@ -1,0 +1,7 @@
+{
+  "id": "fictional-coursework",
+  "scope": "Methods for the fictional feedback experiments in the test inputs.",
+  "max_concurrency": 4,
+  "require_no_new_training": true,
+  "exclude_benchmark_primary": true
+}

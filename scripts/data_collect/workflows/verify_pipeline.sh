@@ -1,87 +1,84 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.."
-
-compose=(docker compose -f scripts/data_collect/docker/compose.yaml)
-hdfs() {
-  "${compose[@]}" exec -T --interactive=false namenode hdfs "$@"
-}
-upload() {
-  "${compose[@]}" exec -T namenode hdfs dfs -put - "$2" < "$1"
-}
-
-export PYTHONUNBUFFERED=1
-python -c 'import pymupdf, pyspark'
-curl --noproxy 127.0.0.1 --fail --silent --show-error --max-time 10 \
-  http://127.0.0.1:9200/ >/dev/null
-safe_mode=$(timeout 15s "${compose[@]}" exec -T --interactive=false \
-  namenode hdfs dfsadmin -safemode get)
-if [[ "$safe_mode" != *"Safe mode is OFF"* ]]; then
-  printf '%s\n' "$safe_mode" "HDFS 尚不可写，请先检查 DataNode。" >&2
-  exit 1
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  echo "Usage: bash scripts/data_collect/workflows/verify_pipeline.sh SNAPSHOT PROFILE [ENV_FILE]" >&2
+  exit 2
 fi
-
+snapshot=$1
+profile=$2
+env_file=${3:-}
+run_cli() {
+  local args=("$@")
+  if [[ -n "$env_file" ]]; then args+=(--env-file "$env_file"); fi
+  python -m scripts.data_collect "${args[@]}"
+}
+compose=(docker compose -f scripts/data_collect/docker/compose.yaml)
+hdfs() { "${compose[@]}" exec -T namenode hdfs dfs "$@"; }
+export PYTHONUNBUFFERED=1
 mkdir -p data/verification
 run_dir=$(mktemp -d data/verification/run-XXXXXXXX)
 hdfs_run="/papers/verification/${run_dir##*/}"
-hdfs_base="hdfs://127.0.0.1:8020"
-doi=10.1145/3514221.3517851
-pdf_url=https://db.cs.cmu.edu/papers/2022/yu-litmusdb-sigmod2022.pdf
-
-printf '本地验证目录 %s\nHDFS 验证目录 %s\n' "$run_dir" "$hdfs_run"
-printf '\n[1/5] 验证 DBLP 分页采集，另按 DOI 定位 Litmus\n'
-python -m scripts.data_collect collect --stream conf/sigmod --year 2022 \
-  --limit 5 --page-size 2 --output "$run_dir/sample.jsonl"
-python -m scripts.data_collect collect --stream conf/sigmod --year 2022 \
-  --doi "$doi" --limit 2 --output "$run_dir/litmus.jsonl"
-paper_id=$(python - "$run_dir/litmus.jsonl" "$doi" <<'PY'
-import hashlib
+python - "$profile" "$run_dir" <<'PY'
+import json,sys
+from pathlib import Path
+profile=json.loads(Path(sys.argv[1]).read_text())
+profile['topics']=profile['topics'][:1]
+profile['per_topic']=1
+Path(sys.argv[2],'profile.json').write_text(json.dumps(profile,ensure_ascii=False,indent=2))
+PY
+printf 'Verification output: %s\n' "$run_dir"
+run_cli build-corpus "$snapshot"
+run_cli index-corpus "$snapshot" --profile "$profile" --no-activate > "$run_dir/index.json"
+index=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["index"])' "$run_dir/index.json")
+run_cli screen --index "$index" --profile "$run_dir/profile.json" --output "$run_dir/screening" \
+  --hdfs-root "$hdfs_run/screening"
+run_id=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["run_id"])' "$run_dir/screening/summary.json")
+query=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["topics"][0]["queries"][0])' "$profile")
+run_cli search --index "$index" --profile "$profile" --text "$query" --top 3 --output "$run_dir/search-all.json"
+run_cli search --index "$index" --profile "$profile" --text "$query" --run-id "$run_id" --output "$run_dir/search-selected.json"
+run_cli collect-pdfs --selection "$run_dir/screening" \
+  --output "$run_dir/pdf" --hdfs-root "$hdfs_run/selected"
+python - "$run_dir" "$run_id" <<'PY'
+import json,sys
+from pathlib import Path
+root=Path(sys.argv[1]); run=sys.argv[2]
+selected=json.loads((root/'screening/selected.jsonl').read_text())
+result=json.loads((root/'search-selected.json').read_text())
+assert [r['paper_id'] for r in result['results']]==[selected['paper_id']]
+manifest=[json.loads(line) for line in (root/'pdf/runs'/run/'manifest.jsonl').read_text().splitlines()]
+assert len(manifest)==1 and manifest[0]['status']=='stored', 'Selected PDF unavailable'
+assert manifest[0]['first_screening_run']==run
+(root/'pdf-record.json').write_text(json.dumps(manifest[0]))
+PY
+paper_id=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["paper_id"])' "$run_dir/pdf-record.json")
+pdf_path=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["hdfs_path"])' "$run_dir/pdf-record.json")
+hdfs -cat "$pdf_path" > "$run_dir/$paper_id.pdf"
+python - "$run_dir/pdf-record.json" "$run_dir/$paper_id.pdf" <<'PY'
+import hashlib,json,sys
+from pathlib import Path
+assert hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()==json.load(open(sys.argv[1]))['sha256']
+PY
+run_cli extract-pages "$run_dir/$paper_id.pdf" "$run_dir/$paper_id.jsonl"
+hdfs -mkdir -p "$hdfs_run/pages"
+hdfs -put -f - "$hdfs_run/pages/$paper_id.jsonl" < "$run_dir/$paper_id.jsonl"
+page_count=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["pages"])' "$run_dir/pdf-record.json")
+read -r expected_page phrase < <(python - "$run_dir/$paper_id.jsonl" <<'PY'
 import json
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as source:
-    records = [json.loads(line) for line in source]
-
-if (
-    len(records) != 1
-    or records[0]["doi_url"].lower().rsplit("doi.org/", 1)[-1] != sys.argv[2]
-    or not records[0]["title"].startswith("Litmus:")
-):
-    raise SystemExit("DBLP 未按预期返回唯一的 Litmus 论文记录。")
-print(hashlib.sha256(records[0]["dblp_id"].encode()).hexdigest())
+    for page in map(json.loads, source):
+        for line in page["text"].splitlines():
+            phrase = " ".join(line.split()[:4])
+            if any(character.isalnum() for character in phrase):
+                print(page["page"], phrase)
+                raise SystemExit
+raise SystemExit("No searchable PDF text found for the highlight check")
 PY
 )
-
-printf '\n[2/5] 上传元数据并由 Spark 校验，生成去重后的 Parquet\n'
-hdfs dfs -mkdir -p "$hdfs_run/batches" "$hdfs_run/curated"
-hdfs dfs -chown "$(id -un)" "$hdfs_run/curated"
-upload "$run_dir/sample.jsonl" "$hdfs_run/batches/sample.jsonl"
-upload "$run_dir/litmus.jsonl" "$hdfs_run/batches/litmus.jsonl"
-python -m scripts.data_collect validate-metadata \
-  "$hdfs_base$hdfs_run/batches/sample.jsonl" --expected-count 5
-python -m scripts.data_collect build-metadata \
-  "$hdfs_base$hdfs_run/batches" "$hdfs_base$hdfs_run/curated/papers"
-
-printf '\n[3/5] 解析公开链接，使用已核对的 CMU 副本下载 Litmus\n'
-manifest="$run_dir/pdf-manifest.jsonl"
-python -m scripts.data_collect resolve-pdfs "$hdfs_base$hdfs_run/curated/papers" "$manifest"
-python -m scripts.data_collect download-pdf "$manifest" "$run_dir/pdfs" "$paper_id" --pdf-url "$pdf_url"
-
-printf '\n[4/5] 提取 PDF 页文本并上传，核对 HDFS 原始 PDF\n'
-pdf_file="$run_dir/pdfs/$paper_id.pdf"
-pages_file="$run_dir/$paper_id.jsonl"
-python -m scripts.data_collect extract-pages "$pdf_file" "$pages_file"
-upload "$pdf_file" "$hdfs_run/$paper_id.pdf"
-upload "$pages_file" "$hdfs_run/$paper_id.jsonl"
-local_hash=$(sha256sum < "$pdf_file")
-remote_hash=$(hdfs dfs -cat "$hdfs_run/$paper_id.pdf" | sha256sum)
-if [[ "$local_hash" != "$remote_hash" ]]; then
-  printf 'HDFS PDF 的 SHA-256 与本地文件不同。\n' >&2
-  exit 1
-fi
-
-printf '\n[5/5] 验证 15 条索引文档和第 1 页短语高亮\n'
-python -m scripts.data_collect index-pages "$hdfs_base$hdfs_run/$paper_id.jsonl" "$paper_id" \
-  --index paper-pages-verification --expected-pages 15 \
-  --phrase 'verifiable outsourced DBMS' --expected-page 1
-printf '\n端到端验证通过。\n'
+page_index=$(printf 'paper-pages-%s' "${run_dir##*/}" | tr '[:upper:]' '[:lower:]')
+hdfs_uri=$(python -c 'from scripts.data_collect.storage import HDFS_URI; print(HDFS_URI)')
+run_cli index-pages "$hdfs_uri$hdfs_run/pages/$paper_id.jsonl" "$paper_id" \
+  --index "$page_index" --expected-pages "$page_count" --phrase "$phrase" --expected-page "$expected_page"
+printf 'Pipeline verification completed: %s\n' "$run_dir"

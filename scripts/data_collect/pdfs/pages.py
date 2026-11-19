@@ -1,34 +1,46 @@
-import json
-from urllib.error import HTTPError
-from urllib.request import ProxyHandler, Request, build_opener
+from ..retrieval.elastic import Elasticsearch, ElasticsearchError
+from ..tool import spark_session, write_jsonl
 
-from .tool import spark_session
+
+def read_pdf_pages(source, *, sort=False):
+    import pymupdf
+
+    try:
+        document = pymupdf.open(stream=source, filetype="pdf") if isinstance(source, bytes) else pymupdf.open(source)
+        with document:
+            if not document.is_pdf or document.needs_pass:
+                raise ValueError("输入文件必须是可读的 PDF。")
+            pages = [page.get_text("text", sort=sort) for page in document]
+    except (pymupdf.FileDataError, RuntimeError) as error:
+        raise ValueError("输入文件必须是可读的 PDF。") from error
+    if not any(page.strip() for page in pages):
+        raise ValueError("未提取到正文，请检查 PDF 文本层。")
+    return pages
+
+
+class PdfPageExtractor:
+    def __init__(self, pdf_path):
+        self.pdf_path = pdf_path
+
+    def extract(self, output_path):
+        pages = read_pdf_pages(self.pdf_path, sort=True)
+        write_jsonl(output_path, (
+            {"paper_id": self.pdf_path.stem, "page": number, "text": text.strip()}
+            for number, text in enumerate(pages, 1)
+        ))
+        return len(pages), sum(bool(text.strip()) for text in pages)
 
 
 class PaperPageIndex:
     def __init__(self, name, base_url="http://127.0.0.1:9200"):
-        self.base_url = base_url
-        self.index_path = f"/{name}"
-        self.opener = build_opener(ProxyHandler({}))
+        self.es = Elasticsearch(base_url)
+        self.name = name
 
     def index_pages(self, paper_id, pages):
         self._ensure_index()
-        lines = []
-        for page in pages:
-            lines.append(json.dumps({"index": {"_id": f"{page.paper_id}:{page.page}"}}))
-            lines.append(json.dumps(page.asDict(), ensure_ascii=False))
-        payload = ("\n".join(lines) + "\n").encode("utf-8")
-        result = self._request(
-            "POST", "/_bulk?refresh=wait_for", payload, "application/x-ndjson"
-        )
-        if result["errors"] or len(result["items"]) != len(pages):
-            errors = [
-                item["index"]["error"] for item in result["items"] if "error" in item["index"]
-            ]
-            raise SystemExit(f"Elasticsearch 批量写入失败 {errors[:3]}")
-
+        self.es.bulk(self.name, ((f"{page.paper_id}:{page.page}", page.asDict()) for page in pages))
         paper_filter = {"term": {"paper_id": paper_id}}
-        indexed_count = self._request("POST", "/_count", {"query": paper_filter})["count"]
+        indexed_count = self.es.request("POST", f"/{self.name}/_count", {"query": paper_filter})["count"]
         if indexed_count != len(pages):
             raise SystemExit(f"索引有 {indexed_count} 页，输入有 {len(pages)} 页。")
         return indexed_count
@@ -44,7 +56,7 @@ class PaperPageIndex:
             }},
             "highlight": {"fields": {"text": {"number_of_fragments": 1}}},
         }
-        hits = self._request("POST", "/_search", query)["hits"]["hits"]
+        hits = self.es.request("POST", f"/{self.name}/_search", query)["hits"]["hits"]
         matching_pages = sorted(hit["_source"]["page"] for hit in hits)
         for hit in hits:
             if hit["_source"]["page"] == expected_page and hit.get("highlight", {}).get("text"):
@@ -64,23 +76,11 @@ class PaperPageIndex:
             }},
         }
         try:
-            self._request("PUT", "", settings)
-        except HTTPError as exc:
-            if exc.code != 400:
+            self.es.request("PUT", f"/{self.name}", settings)
+        except ElasticsearchError as exc:
+            if (exc.status != 400 or not isinstance(exc.reason, dict)
+                    or exc.reason.get("type") != "resource_already_exists_exception"):
                 raise
-            if json.load(exc)["error"]["type"] != "resource_already_exists_exception":
-                raise
-
-    def _request(self, method, path, body, content_type="application/json"):
-        data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
-        request = Request(
-            self.base_url + self.index_path + path,
-            data=data,
-            method=method,
-            headers={"Content-Type": content_type},
-        )
-        with self.opener.open(request, timeout=30) as response:
-            return json.load(response)
 
 
 def read_pages(input_uri):

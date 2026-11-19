@@ -1,0 +1,193 @@
+{
+  "embedding": {
+    "endpoint": "https://api.siliconflow.cn/v1/embeddings",
+    "model": "Qwen/Qwen3-Embedding-8B",
+    "dimensions": 1024,
+    "query_instruction": "Retrieve research papers relevant to the described research task."
+  },
+  "fields": [
+    "title^6",
+    "abstract^2",
+    "tags.value^3"
+  ],
+  "rrf_k": 60,
+  "per_topic": 200,
+  "topics": [
+    {
+      "id": "code_generation",
+      "label": "代码生成与候选选择",
+      "queries": [
+        "Large language models generating and completing source code for programming problems, competitive programming, and functional correctness.",
+        "Selecting, ranking, or improving generated program solutions using execution feedback, sampling, and correctness verification."
+      ],
+      "keywords": [
+        "code generation/completion",
+        "HumanEval / HumanEval Plus",
+        "coding benchmarks",
+        "code-specific model"
+      ]
+    },
+    {
+      "id": "code_repair",
+      "label": "代码修复与调试",
+      "queries": [
+        "Language models debugging software, locating faults, generating patches, and repairing incorrect programs.",
+        "Automated program repair and bug fixing using language models, test failures, and execution feedback."
+      ],
+      "keywords": [
+        "program repair/debugging",
+        "repair benchmarks",
+        "SWE-bench variants",
+        "code-specific model"
+      ]
+    },
+    {
+      "id": "code_editing",
+      "label": "代码编辑、迁移与审查",
+      "queries": [
+        "Language models editing and modifying existing source code according to natural language instructions, with efficient large and small model collaboration.",
+        "Language models translating or migrating programs between programming languages, refactoring code, and generating code review feedback."
+      ],
+      "keywords": [
+        "code editing/translation/review",
+        "editing benchmarks",
+        "code-specific model"
+      ]
+    },
+    {
+      "id": "code_tests",
+      "label": "单元测试与代码验证",
+      "queries": [
+        "Language models generating unit tests, test cases and test assertions for programs and evaluating the correctness of generated code.",
+        "Improving code solution verification and reward signals by generating, selecting, or scaling executable tests."
+      ],
+      "keywords": [
+        "test generation/verification",
+        "testing benchmarks",
+        "code-specific model"
+      ]
+    },
+    {
+      "id": "coding_agents",
+      "label": "仓库级任务与 coding agent",
+      "queries": [
+        "Coding agents using tools to solve GitHub issues and repository-level software engineering tasks with planning, search, and iterative feedback.",
+        "Language model agents understanding software repositories, generating project implementations, and making coordinated changes across multiple files."
+      ],
+      "keywords": [
+        "repository agents/tasks",
+        "SWE-bench variants",
+        "code-specific model",
+        "repository benchmarks",
+        "coding agents/tools"
+      ]
+    },
+    {
+      "id": "math_solving",
+      "label": "数学解题与推理",
+      "queries": [
+        "Language models solving mathematical problems, arithmetic word problems, competition and olympiad mathematics, and symbolic reasoning.",
+        "Improving mathematical problem solving with reasoning search, tool-assisted calculation, and reasoning language models."
+      ],
+      "keywords": [
+        "mathematical tasks",
+        "math benchmarks",
+        "math/reasoning model"
+      ]
+    },
+    {
+      "id": "math_verification",
+      "label": "推理验证、纠错与效率",
+      "queries": [
+        "Verifying mathematical reasoning steps, detecting errors in solutions, process reward models, self-correction and reasoning critique.",
+        "Reducing overthinking and redundant chain-of-thought tokens while maintaining accuracy on mathematical reasoning benchmarks."
+      ],
+      "keywords": [
+        "reasoning verification/efficiency",
+        "verification benchmarks",
+        "math/reasoning model"
+      ]
+    },
+    {
+      "id": "text_qa",
+      "label": "文本问答与上下文方法",
+      "queries": [
+        "Language models answering text questions with provided passages, multi-hop question answering, retrieval context selection and context compression.",
+        "Improving language model question answering and reasoning by learning from mistakes, selecting demonstrations, and refining prompts."
+      ],
+      "keywords": [
+        "text QA tasks",
+        "QA benchmarks"
+      ]
+    },
+    {
+      "id": "instruction_following",
+      "label": "指令遵循与通用文本推理",
+      "queries": [
+        "Evaluating and improving language model instruction following with verifiable constraints and multi-instruction prompts.",
+        "Prompting methods, self-reflection, and code-assisted reasoning for text-based reasoning tasks evaluated on BIG-Bench Hard."
+      ],
+      "keywords": [
+        "instruction tasks",
+        "instruction/reasoning benchmarks"
+      ]
+    },
+    {
+      "id": "prompt_optimization",
+      "label": "提示优化、示例选择与上下文学习",
+      "queries": [
+        "Methods for optimizing prompts and selecting in-context demonstrations to improve language model task performance, learning from feedback and mistakes.",
+        "Language model prompt refinement, automatic prompt optimization, demonstration retrieval and context engineering for text reasoning tasks."
+      ],
+      "keywords": [
+        "prompt and ICL methods"
+      ]
+    },
+    {
+      "id": "reasoning_search",
+      "label": "推理搜索、自纠错与推理预算",
+      "queries": [
+        "Inference-time methods that improve language model reasoning through search, self-reflection, self-correction, verification and allocating computation budgets.",
+        "Language model planning and tree search over candidate reasoning trajectories, combining multiple solution paths and choosing reliable answers."
+      ],
+      "keywords": [
+        "reasoning strategies"
+      ]
+    },
+    {
+      "id": "tool_use_agents",
+      "label": "工具调用与任务型智能体",
+      "queries": [
+        "Language model agents using external tools, function calls and APIs to solve text-based tasks, plan action sequences and learn from execution feedback.",
+        "Reliable tool selection, tool invocation and multi-agent cooperation for language model assistants completing practical tasks."
+      ],
+      "keywords": [
+        "tool-use tasks",
+        "tool agent benchmarks"
+      ]
+    },
+    {
+      "id": "code_efficiency",
+      "label": "生成程序的效率与资源使用",
+      "queries": [
+        "Improving the execution time, memory use, computational complexity and resource efficiency of programs generated by language models, using profiling, optimization or program transformations.",
+        "Language model methods for efficient generated code, with measured runtime and memory feedback, performance bottleneck analysis, and correctness-preserving code optimization."
+      ],
+      "keywords": [
+        "generated program performance",
+        "program efficiency benchmarks"
+      ]
+    },
+    {
+      "id": "feedback_reliability",
+      "label": "执行反馈与自检可靠性",
+      "queries": [
+        "Understanding when generated tests, self-debugging, self-correction and execution feedback improve or harm language model code generation, including incorrect tests and changes from correct programs to wrong programs.",
+        "Controlled experiments on code model feedback reliability, self-generated test bias, correctness checking, execution traces and repeated refinement, with practical comparisons of inference-time methods."
+      ],
+      "keywords": [
+        "feedback reliability"
+      ]
+    }
+  ]
+}

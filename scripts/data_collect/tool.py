@@ -1,7 +1,27 @@
 import json
+import hashlib
 from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
+
+
+def read_jsonl(path):
+    with Path(path).open(encoding="utf-8") as source:
+        return [json.loads(line) for line in source if line.strip()]
+
+
+def file_sha256(path):
+    with Path(path).open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def write_json(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(dir=path.parent) as directory:
+        temporary = Path(directory) / path.name
+        temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
 
 
 def write_jsonl(path, records):
