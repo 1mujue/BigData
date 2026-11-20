@@ -161,7 +161,8 @@ class Collector:
                 matches=by_id.get(row['openreview_id'],[]) or by_title.get(title_key(row['title']),[])
                 if len(matches)==1:
                     other=matches[0]
-                    # A publication URL is an identity alias, never a second candidate list.
+                    # Use the proceedings-based source key for a unique match.
+                    row['id'] = other['id']
                     row['paper_url']=other['paper_url'];merge_into(row,other)
         self.paperlists(venue,year,rows)
         def enrich(row):
